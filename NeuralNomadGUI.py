@@ -1,25 +1,28 @@
 # if using SSH to the device: export DISPLAY=:0
- 
+
+"""GUI application for Neural Nomad."""
+
 from tkinter import *
-import tkinter as tk
-import customtkinter
-import time
-import os
-import subprocess
-import whisper
-from pathlib import Path
 import json
-import warnings
-import ollama
-import time
+import os
+import re
+import subprocess
 import sys
 import threading
-import PIL
-from PIL import Image
+import time
+import warnings
 import wave
-from piper.voice import PiperVoice
+from pathlib import Path
 
-import re
+import customtkinter
+import ollama
+import PIL
+import whisper
+from PIL import Image
+from piper.voice import PiperVoice
+import tkinter as tk
+
+
 alphabets= "([A-Za-z])"
 prefixes = "(Mr|St|Mrs|Ms|Dr)[.]"
 suffixes = "(Inc|Ltd|Jr|Sr|Co)"
@@ -69,46 +72,81 @@ def split_into_sentences(text: str) -> list[str]:
     if sentences and not sentences[-1]: sentences = sentences[:-1]
     return sentences
 
-def audio_play(text_TTS):
-	print("TTS now...")
-	os.system("echo '" +  text_TTS + "' |   /home/mosfet/NeuralNomad/my-venv/bin/piper --model en_US-lessac-medium  --output-raw | aplay -r 22000 -f S16_LE -t raw")
+def audio_play(text_tts):
+    """Plays text using text-to-speech via piper and aplay.
+    
+    Args:
+        text_tts: Text string to convert to speech.
+    """
+    print("TTS now...")
+    cmd = (f"echo '{text_tts}' | /home/mosfet/NeuralNomad/my-venv/bin/piper "
+           "--model en_US-lessac-medium --output-raw | "
+           "aplay -r 22000 -f S16_LE -t raw")
+    os.system(cmd)
+
+
 
 def audio_record():
-	display_mic_on()
-	progressbar.place(relx=0.5, rely=0.8, anchor=CENTER)
-	progressbar.configure(mode="determinate", progress_color="red", determinate_speed=0.2)
-	progressbar.set(0)
-	progressbar.start()  # Start the animation
-	
-	textbox.insert(END,  "Speak now!\n") 
-	textbox.see(tk.END)
+    """Records audio input and converts it to text using speech recognition.
+    
+    Displays recording status via GUI elements and captures 5 seconds of audio
+    using arecord. The audio is then transcribed to text using the model.
+    
+    Returns:
+        str: The transcribed text from the audio recording.
+    """
+    display_mic_on()
+    progressbar.place(relx=0.5, rely=0.8, anchor=CENTER)
+    progressbar.configure(
+        mode="determinate",
+        progress_color="red",
+        determinate_speed=0.2
+    )
+    progressbar.set(0)
+    progressbar.start()  # Start the animation
+    
+    textbox.insert(END, "Speak now!\n")
+    textbox.see(tk.END)
 
-	os.system("arecord -D hw:0,0 -d 5 -f S16 " + filename + " -r 44100 > /dev/null 2>&1")
-	display_mic_off()
-	sys.stdout = open(os.devnull, "w")
-	sys.stderr = open(os.devnull, "w")
+    # Record 5 seconds of audio
+    record_cmd = (f"arecord -D hw:0,0 -d 5 -f S16 {AUDIO_FILENAME} "
+                 f"-r 44100 > /dev/null 2>&1")
+    os.system(record_cmd)
+    display_mic_off()
 
-	textbox.delete('1.0', END)
-	textbox.insert(END,  "Performing speech to text...\n") 
-	textbox.see(tk.END)
+    # Redirect stdout/stderr during transcription
+    sys.stdout = open(os.devnull, "w")
+    sys.stderr = open(os.devnull, "w")
 
-	progressbar.configure(mode="indeterminate", progress_color="yellow")
-	text_out = model.transcribe(str(path), language='en', verbose=False)
-	sys.stdout = sys.__stdout__
-	sys.stderr = sys.__stderr__
-	textbox.delete('0.0', END)
-	return text_out['text']
+    textbox.delete('1.0', END)
+    textbox.insert(END, "Performing speech to text...\n")
+    textbox.see(tk.END)
 
-def warmup_LLM():
-	prompt = "what is the color of the sky? answer in a few words"
-	textbox.insert(END, "Warming up the model...") 
-	output = ollama.chat(
-		model=LLM,
-		messages=[{'role': 'user', 'content': prompt}],
-		stream=False,
-		)
-	textbox.insert(END, "Done!\n") 
-	progressbar.stop()  # Stop the animation
+    progressbar.configure(mode="indeterminate", progress_color="yellow")
+    text_out = model.transcribe(str(path), language='en', verbose=False)
+    
+    # Restore stdout/stderr
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    
+    textbox.delete('0.0', END)
+    return text_out['text']
+
+def warmup_llm():
+    """Warms up the LLM model with a simple test prompt.
+    
+    Sends a basic prompt to the model
+    """
+    LLM="llama3.2:1b"
+    
+    prompt = "what is the color of the sky? answer in a few words"
+    textbox.insert(END, "Warming up the model...")
+    output = ollama.chat(
+        model=LLM,
+        messages=[{'role': 'user', 'content': prompt}],
+        stream=False)
+    textbox.insert(END, "Done!\n")
+    progressbar.stop()  # Stop the animation
 
 def LLM_process_thread_func():
 	textbox.delete("0.0", "end")  # delete all text
@@ -126,8 +164,9 @@ def LLM_process_thread_func():
 	)
 	global LLMProcessing
 	LLMProcessing = 1
-	global requestedInterruption
 	
+	global requested_interruption
+     
 	progressbar.set(0)
 	progressbar.stop()
 	root.update()
@@ -137,7 +176,7 @@ def LLM_process_thread_func():
 	progressbar.start()  # Start the animation
 
 	for chunk in stream:
-		if requestedInterruption == 1:
+		if requested_interruption == 1:
 			break    # break here
 		textbox.insert(END,  chunk['message']['content']) 
 		textbox.see(tk.END)
@@ -154,99 +193,190 @@ def LLM_process_thread_func():
 	if (audio_switch.get() == "on"):
 		audio_play(response)
 	LLMProcessing = 0
-	requestedInterruption = 0
+	requested_interruption = 0
 
 def myapp():
-	response=""
-	global LLMProcessing
-	global requestedInterruption
-	if (LLMProcessing == 0):
-			thread = threading.Thread(target=LLM_process_thread_func)
-			thread.start()
-	else:
-		requestedInterruption=1
+    """Handles starting/stopping LLM processing in a separate thread."""
+    response = ""
+    
+    if LLMProcessing == 0:
+        thread = threading.Thread(target=LLM_process_thread_func)
+        thread.start()
+    else:
+        requested_interruption = 1
 
 
-def clearScreen():
-	textbox.delete("0.0", "end")  # delete all text
-	textbox.insert(END,  "Touch the mic to get started!") 
-	root.update()
+def clear_screen():
+    """Clears the text display and shows the initial prompt message."""
+    textbox.delete("0.0", "end")  # delete all text
+    textbox.insert(END, "Touch the mic to get started!")
+    root.update()
 
 def select_model(choice):
-	global LLM
-	LLM=choice
+    """Updates the global LLM model selection.
+    
+    Args:
+        choice: String name of the LLM model to use.
+    """
+    global LLM
+    LLM = choice
 
 def exit_app():
+    """Exits the application by destroying the root window."""
     root.destroy()
 
 def display_mic_on():
-	my_image = customtkinter.CTkImage(Image.open("/home/mosfet/NeuralNomad/GUI/images/mic_on.png"), size=(60, 60))
-	mic_button = customtkinter.CTkButton(master=root, corner_radius=0, width=60, height=60, image=my_image, text="")  # display image with a CTkLabel
-	mic_button.place(relx=0.9, rely=0.1, anchor=CENTER)
+    """Displays the microphone 'on' button image in the GUI.
+    
+    Creates and places a button with the mic_on.png image at the top right
+    of the window.
+    """
+    my_image = customtkinter.CTkImage(
+        Image.open("/home/mosfet/NeuralNomad/GUI/images/mic_on.png"),
+        size=(60, 60))
+    mic_button = customtkinter.CTkButton(
+        master=root,
+        corner_radius=0,
+        width=60,
+        height=60,
+        image=my_image,
+        text="")  # display image with a CTkLabel
+    mic_button.place(relx=0.9, rely=0.1, anchor=CENTER)
 
 def display_mic_off():
-	my_image = customtkinter.CTkImage(Image.open("/home/mosfet/NeuralNomad/GUI/images/mic_off.png"), size=(60, 60))
-	mic_button = customtkinter.CTkButton(master=root, corner_radius=0, width=60, height=60, command=myapp, image=my_image, text="")  # display image with a CTkLabel
-	mic_button.place(relx=0.9, rely=0.1, anchor=CENTER)
-
-LLM="gemma2:2b"
-LLM="llama3.1:8b"
-LLM="qwen2:0.5b"
-LLM="llama3.1:8b"
-LLM="gemma2:2b"
-LLM="qwen2:0.5b"
-LLM="tinyllama"
-LLM="llama3.2:1b"
-
-STTModel='tiny'
-SystemInstruction = '. Provide a short, concise answer.'
-
-#disable all warnings (not recommended!)
-warnings.filterwarnings("ignore")
-
-response=""
+    """Displays the microphone 'off' button image in the GUI.
+    
+    Creates and places a button with the mic_off.png image at the top right
+    of the window.
+    """
+    my_image = customtkinter.CTkImage(
+        Image.open("/home/mosfet/NeuralNomad/GUI/images/mic_off.png"),
+        size=(60, 60))
+    mic_button = customtkinter.CTkButton(
+        master=root,
+        corner_radius=0,
+        width=60,
+        height=60,
+        command=myapp,
+        image=my_image,
+        text="")  # display image with a CTkLabel
+    mic_button.place(relx=0.9, rely=0.1, anchor=CENTER)
 
 
-model = whisper.load_model('tiny')
-filename = 'stt-tmp.wav'
-path = Path(filename)
+# Main code
 
-LLMProcessing = 0
-requestedInterruption = 0
+# Global constants
+LLM = "llama3.2:1b"
+STT_MODEL = 'tiny'
+SYSTEM_INSTRUCTION = '. Provide a short, concise answer.'
+AUDIO_FILENAME = 'stt-tmp.wav'
 
-# Create the main window
-root = customtkinter.CTk()
-root.title("NeuralNomad")
-root.attributes('-fullscreen', True)
-root.configure(cursor="none") 
+# Global variables
+response = ""
+global requested_interruption
+requested_interruption = False
 
-audio_switch = customtkinter.StringVar(value="on")
-customtkinter.set_appearance_mode("dark")
-customtkinter.set_default_color_theme("blue")
+global LLMProcessing
+LLMProcessing = False
 
-button = customtkinter.CTkButton(master=root, text="-[ NeuralNomad ]-", font=("Fixedsys",26), command=clearScreen)
-button.place(relx=0.35, rely=0.1, anchor=CENTER)
+# Initialize models
+warnings.filterwarnings("ignore")  # Not recommended in production (TODO: remove)
+model = whisper.load_model(STT_MODEL)
+path = Path(AUDIO_FILENAME)
 
-optionmenu_1 = customtkinter.CTkOptionMenu(master=root, command=select_model, width=170, height=30,  font=("Fixedsys",14), dynamic_resizing=False, values=["llama3.2:1b", "tinyllama", "gemma2:2b", "qwen2:0.5b", "phi3:3.8b-mini-128k-instruct-q3_K_S", "llama3.1:8b"])
-optionmenu_1.place(relx=0.2, rely=0.9, anchor=CENTER)
+def init_main_window():
+    """Initializes and configures the main application window."""
+    root = customtkinter.CTk()
+    root.title("NeuralNomad")
+    root.attributes('-fullscreen', True)
+    root.configure(cursor="none")
+    return root
 
-switch=customtkinter.CTkSwitch(master=root, text="Audio out", switch_width=55, switch_height=30,  font=("Fixedsys",14), variable=audio_switch, onvalue="on", offvalue="off")
-switch.place(relx=0.6, rely=0.9, anchor=CENTER)
-switch.deselect()
+def init_ui_elements(root):
+    """Creates and places all UI elements in the main window.
+    
+    Args:
+        root: The main application window
+    """
+    # Configure appearance
+    customtkinter.set_appearance_mode("dark")
+    customtkinter.set_default_color_theme("blue")
+    
+    # Create widgets
+    title_button = customtkinter.CTkButton(
+        master=root,
+        text="-[ NeuralNomad ]-",
+        font=("Fixedsys", 26),
+        command=clear_screen
+    )
+    
+    model_menu = customtkinter.CTkOptionMenu(
+        master=root,
+        command=select_model,
+        width=170,
+        height=30,
+        font=("Fixedsys", 14),
+        dynamic_resizing=False,
+        values=["llama3.2:1b", "tinyllama", "gemma2:2b", 
+               "qwen2:0.5b", "phi3:3.8b-mini-128k-instruct-q3_K_S", "llama3.1:8b"]
+    )
+    
+    global audio_switch
+    audio_switch = customtkinter.StringVar(value="on")
+    audio_toggle = customtkinter.CTkSwitch(
+        master=root,
+        text="Audio out",
+        switch_width=55,
+        switch_height=30,
+        font=("Fixedsys", 14),
+        variable=audio_switch,
+        onvalue="on",
+        offvalue="off"
+    )
+    
+    exit_button = customtkinter.CTkButton(
+        master=root,
+        text="Exit",
+        width=60,
+        height=30,
+        font=("Fixedsys", 14),
+        command=exit_app
+    )
+    
+    textbox = customtkinter.CTkTextbox(
+        root,
+        width=450,
+        height=180,
+        font=("Fixedsys", 14)
+    )
+    
+    progressbar = customtkinter.CTkProgressBar(
+        root,
+        orientation="horizontal",
+        width=200,
+        height=20,
+        mode="indeterminate"
+    )
 
-exitButton = customtkinter.CTkButton(master=root, text="Exit", width=60, height=30, font=("Fixedsys",14), command=exit_app)
-exitButton.place(relx=0.9, rely=0.9, anchor=CENTER)
+    # Place widgets
+    title_button.place(relx=0.35, rely=0.1, anchor=CENTER)
+    model_menu.place(relx=0.2, rely=0.9, anchor=CENTER)
+    audio_toggle.place(relx=0.6, rely=0.9, anchor=CENTER)
+    audio_toggle.deselect()
+    exit_button.place(relx=0.9, rely=0.9, anchor=CENTER)
+    textbox.place(relx=0.5, rely=0.5, anchor=CENTER)
+    
+    return textbox, progressbar
 
-textbox = customtkinter.CTkTextbox(root, width=450, height=180,  font=("Fixedsys",14))
-textbox.place(relx=0.5, rely=0.5, anchor=CENTER)
+# Initialize application
+root = init_main_window()
+textbox, progressbar = init_ui_elements(root)
 
-progressbar = customtkinter.CTkProgressBar(root, orientation="horizontal", width=200, height=20, mode="indeterminate")
-
+# Setup initial state
 display_mic_off()
+warmup_llm()
 
-warmup_LLM()
-
-textbox.insert(END,  "Touch the mic to get started!") 
+textbox.insert(END, "Touch the mic to get started!")
 textbox.see(tk.END)
 
 root.mainloop()
